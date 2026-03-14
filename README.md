@@ -34,7 +34,6 @@ A web-based PDF editor built with React that lets you upload PDFs, add text and 
 ### Installation
 
 ```bash
-cd pdf-editor-pro
 npm install
 ```
 
@@ -54,7 +53,6 @@ npm run preview
 ## Project Structure
 
 ```
-pdf-editor-pro/
 ├── src/
 │   ├── App.jsx              # Main app state and layout
 │   ├── components/
