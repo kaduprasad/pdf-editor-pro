@@ -182,7 +182,7 @@ export default function ImageOverlay({ image, index, selected, onSelect, onUpdat
         if (!selected) onSelect();
       }}
       lockAspectRatio={!isCropping}
-      disableDragging={isCropping || !selected}
+      disableDragging={isCropping}
       bounds="parent"
       style={{
         border: isCropping
@@ -191,7 +191,7 @@ export default function ImageOverlay({ image, index, selected, onSelect, onUpdat
             ? '2px solid rgba(26, 140, 255, 0.6)'
             : '1px solid rgba(26, 140, 255, 0.08)',
         borderRadius: '2px',
-        cursor: isCropping ? 'default' : selected ? 'move' : 'pointer',
+        cursor: isCropping ? 'default' : 'move',
         zIndex: selected ? 12 : 10,
         overflow: 'visible',
       }}
