@@ -1,23 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
+import type { OverlaysByPage, PageOverlays } from '../types';
 
 const SESSION_KEY = 'pdf-editor-pro-overlays';
 
-/**
- * Strip large data URLs from overlays before saving to sessionStorage
- * to avoid exceeding the ~5MB limit.
- */
-function stripForStorage(overlays) {
-  const cleaned = {};
+function stripForStorage(overlays: OverlaysByPage): Record<string, { texts: PageOverlays['texts']; images: Array<Omit<PageOverlays['images'][number], 'src'>> }> {
+  const cleaned: Record<string, { texts: PageOverlays['texts']; images: Array<Omit<PageOverlays['images'][number], 'src'>> }> = {};
   for (const [page, data] of Object.entries(overlays)) {
     cleaned[page] = {
       texts: data.texts || [],
-      // Only store image metadata, not the full data URL
       images: (data.images || []).map(img => ({
         x: img.x,
         y: img.y,
         width: img.width,
         height: img.height,
-        // skip src to avoid sessionStorage overflow
       })),
     };
   }
@@ -25,10 +20,10 @@ function stripForStorage(overlays) {
 }
 
 export function useSessionStorage() {
-  const [overlays, setOverlays] = useState(() => {
+  const [overlays, setOverlays] = useState<OverlaysByPage>(() => {
     try {
       const stored = sessionStorage.getItem(SESSION_KEY);
-      return stored ? JSON.parse(stored) : {};
+      return stored ? JSON.parse(stored) as OverlaysByPage : {};
     } catch {
       return {};
     }
@@ -42,22 +37,18 @@ export function useSessionStorage() {
     }
   }, [overlays]);
 
-  const getPageOverlays = useCallback((pageIndex) => {
+  const getPageOverlays = useCallback((pageIndex: number): PageOverlays => {
     return overlays[pageIndex] || { images: [], texts: [] };
   }, [overlays]);
 
-  const setPageOverlays = useCallback((pageIndex, data) => {
+  const setPageOverlays = useCallback((pageIndex: number, data: PageOverlays) => {
     setOverlays(prev => ({
       ...prev,
       [pageIndex]: data,
     }));
   }, []);
 
-  /**
-   * Functional updater — avoids stale closure issues.
-   * updater receives the current page overlays and returns the new value.
-   */
-  const updatePageOverlays = useCallback((pageIndex, updater) => {
+  const updatePageOverlays = useCallback((pageIndex: number, updater: (current: PageOverlays) => PageOverlays) => {
     setOverlays(prev => {
       const current = prev[pageIndex] || { images: [], texts: [] };
       return {

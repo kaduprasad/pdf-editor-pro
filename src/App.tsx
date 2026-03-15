@@ -1,5 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import type { ChangeEvent } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { saveAs } from 'file-saver';
 import { FileUp } from 'lucide-react';
 
@@ -8,7 +10,8 @@ import PdfViewer from './components/PdfViewer';
 import ImageOverlay from './components/ImageOverlay';
 import TextOverlay from './components/TextOverlay';
 import { useSessionStorage } from './hooks/useSessionStorage';
-import { exportPdfWithEdits } from './utils/pdfExport';
+import { exportPdfWithEdits, extractOverlayData } from './utils/pdfExport';
+import type { ImageOverlayData, TextOverlayData, PageDimensionsMap, PageDimensions, SelectedOverlay } from './types';
 import './App.css';
 
 // Worker
@@ -18,20 +21,20 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 function App() {
-  const [pdfDoc, setPdfDoc] = useState(null);
-  const [pdfBytes, setPdfBytes] = useState(null);
+  const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
+  const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
   const [pdfName, setPdfName] = useState('');
   const [totalPages, setTotalPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
   const [loading, setLoading] = useState(false);
   const [fontSize, setFontSize] = useState(16);
   const [isBold, setIsBold] = useState(false);
-  const [pageDimensions, setPageDimensions] = useState({});
-  const [zoom, setZoom] = useState(null); // null = auto-fit
-  const [selectedOverlay, setSelectedOverlay] = useState(null); // e.g. { type: 'image', index: 0 }
+  const [pageDimensions, setPageDimensions] = useState<PageDimensionsMap>({});
+  const [zoom, setZoom] = useState<number | null>(null);
+  const [selectedOverlay, setSelectedOverlay] = useState<SelectedOverlay | null>(null);
 
   const { overlays, getPageOverlays, setPageOverlays, updatePageOverlays, clearAll } = useSessionStorage();
-  const editorWrapperRef = useRef(null);
+  const editorWrapperRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
 
   // Measure the editor wrapper so PdfViewer can scale to fill it
@@ -59,7 +62,7 @@ function App() {
   // Ctrl+Scroll to zoom
   useEffect(() => {
     if (!pdfDoc) return;
-    const handleWheel = (e) => {
+    const handleWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
       if (e.deltaY < 0) {
@@ -83,7 +86,7 @@ function App() {
   const texts = pageOverlays.texts || [];
 
   // ---- PDF Loading ----
-  const loadPdf = useCallback(async (arrayBuffer, fileName) => {
+  const loadPdf = useCallback(async (arrayBuffer: ArrayBuffer, fileName: string) => {
     setLoading(true);
     try {
       const bytes = new Uint8Array(arrayBuffer);
@@ -94,20 +97,29 @@ function App() {
       setPdfDoc(doc);
       setTotalPages(doc.numPages);
       setCurrentPage(0);
+
+      // Check for embedded overlay data from a previous edit session
+      const embedded = await extractOverlayData(doc);
+      if (embedded) {
+        for (const [pageIdx, pageData] of Object.entries(embedded.overlaysByPage)) {
+          setPageOverlays(Number(pageIdx), pageData);
+        }
+        setPageDimensions(embedded.pageDimensions);
+      }
     } catch (err) {
       console.error('Failed to load PDF:', err);
       alert('Failed to load PDF. Please try a different file.');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setPageOverlays]);
 
-  const handleUpload = useCallback((e) => {
+  const handleUpload = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     clearAll();
     const reader = new FileReader();
-    reader.onload = () => loadPdf(reader.result, file.name);
+    reader.onload = () => loadPdf(reader.result as ArrayBuffer, file.name);
     reader.readAsArrayBuffer(file);
     e.target.value = '';
   }, [loadPdf, clearAll]);
@@ -122,16 +134,16 @@ function App() {
   }, [totalPages]);
 
   // ---- Dimension tracking ----
-  const handleDimensionsReady = useCallback((pageIdx, dims) => {
-    setPageDimensions(prev => ({ ...prev, [pageIdx]: dims }));
+  const handleDimensionsReady = useCallback((_pageIdx: number, dims: PageDimensions) => {
+    setPageDimensions(prev => ({ ...prev, [_pageIdx]: dims }));
   }, []);
 
   // Track mouse position relative to the canvas-and-overlays container
   const mousePosRef = useRef({ x: 50, y: 50 });
-  const canvasWrapperRef = useRef(null);
+  const canvasWrapperRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const handleMouseMove = (e) => {
+    const handleMouseMove = (e: MouseEvent) => {
       if (!canvasWrapperRef.current) return;
       const rect = canvasWrapperRef.current.getBoundingClientRect();
       mousePosRef.current = {
@@ -144,24 +156,22 @@ function App() {
   }, []);
 
   // ---- Image handling ----
-  const addImageFromDataUrl = useCallback((dataUrl, position) => {
+  const addImageFromDataUrl = useCallback((dataUrl: string, position?: { x: number; y: number }) => {
     const img = new Image();
     img.onload = () => {
       const maxW = 300;
       const scale = img.width > maxW ? maxW / img.width : 1;
       const w = img.width * scale;
       const h = img.height * scale;
-      // Center image on the given position (or default 50,50)
       const px = position ? Math.max(0, position.x - w / 2) : 50;
       const py = position ? Math.max(0, position.y - h / 2) : 50;
-      const newImage = {
+      const newImage: ImageOverlayData = {
         src: dataUrl,
         x: px,
         y: py,
         width: w,
         height: h,
       };
-      // Use functional updater to avoid stale closure
       updatePageOverlays(currentPage, (prev) => ({
         ...prev,
         images: [...(prev.images || []), newImage],
@@ -178,10 +188,10 @@ function App() {
     input.type = 'file';
     input.accept = 'image/png,image/jpeg,image/webp';
     input.onchange = (e) => {
-      const file = e.target.files?.[0];
+      const file = (e.target as HTMLInputElement).files?.[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = () => addImageFromDataUrl(reader.result);
+      reader.onload = () => addImageFromDataUrl(reader.result as string);
       reader.readAsDataURL(file);
     };
     input.click();
@@ -190,7 +200,7 @@ function App() {
   // Clipboard paste — place image at current mouse position
   useEffect(() => {
     if (!pdfDoc) return;
-    const handlePaste = (e) => {
+    const handlePaste = (e: ClipboardEvent) => {
       const items = e.clipboardData?.items;
       if (!items) return;
       for (const item of items) {
@@ -198,8 +208,9 @@ function App() {
           e.preventDefault();
           const pos = { ...mousePosRef.current };
           const blob = item.getAsFile();
+          if (!blob) break;
           const reader = new FileReader();
-          reader.onload = () => addImageFromDataUrl(reader.result, pos);
+          reader.onload = () => addImageFromDataUrl(reader.result as string, pos);
           reader.readAsDataURL(blob);
           break;
         }
@@ -209,14 +220,14 @@ function App() {
     return () => window.removeEventListener('paste', handlePaste);
   }, [pdfDoc, addImageFromDataUrl]);
 
-  const updateImage = useCallback((index, updatedImage) => {
+  const updateImage = useCallback((index: number, updatedImage: ImageOverlayData) => {
     const current = getPageOverlays(currentPage);
     const newImages = [...(current.images || [])];
     newImages[index] = updatedImage;
     setPageOverlays(currentPage, { ...current, images: newImages });
   }, [currentPage, getPageOverlays, setPageOverlays]);
 
-  const deleteImage = useCallback((index) => {
+  const deleteImage = useCallback((index: number) => {
     const current = getPageOverlays(currentPage);
     const newImages = [...(current.images || [])];
     newImages.splice(index, 1);
@@ -225,7 +236,7 @@ function App() {
 
   // ---- Text handling ----
   const handleAddText = useCallback(() => {
-    const newText = {
+    const newText: TextOverlayData = {
       content: '',
       x: 80,
       y: 80,
@@ -241,14 +252,14 @@ function App() {
     });
   }, [currentPage, fontSize, isBold, getPageOverlays, setPageOverlays]);
 
-  const updateText = useCallback((index, updatedText) => {
+  const updateText = useCallback((index: number, updatedText: TextOverlayData) => {
     const current = getPageOverlays(currentPage);
     const newTexts = [...(current.texts || [])];
     newTexts[index] = updatedText;
     setPageOverlays(currentPage, { ...current, texts: newTexts });
   }, [currentPage, getPageOverlays, setPageOverlays]);
 
-  const deleteText = useCallback((index) => {
+  const deleteText = useCallback((index: number) => {
     const current = getPageOverlays(currentPage);
     const newTexts = [...(current.texts || [])];
     newTexts.splice(index, 1);
@@ -268,12 +279,12 @@ function App() {
     setLoading(true);
     try {
       const editedBytes = await exportPdfWithEdits(pdfBytes, overlays, pageDimensions);
-      const blob = new Blob([editedBytes], { type: 'application/pdf' });
+      const blob = new Blob([editedBytes as BlobPart], { type: 'application/pdf' });
       const name = pdfName.replace(/\.pdf$/i, '') + '_edited.pdf';
       saveAs(blob, name);
     } catch (err) {
       console.error('Export failed:', err);
-      alert('Failed to export PDF. ' + err.message);
+      alert('Failed to export PDF. ' + (err instanceof Error ? err.message : String(err)));
     } finally {
       setLoading(false);
     }
@@ -282,8 +293,9 @@ function App() {
   // ---- Keyboard shortcuts ----
   useEffect(() => {
     if (!pdfDoc) return;
-    const handleKey = (e) => {
-      if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+    const handleKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'TEXTAREA' || tag === 'INPUT') return;
       if (e.key === 'ArrowLeft') handlePrevPage();
       if (e.key === 'ArrowRight') handleNextPage();
     };
@@ -349,8 +361,7 @@ function App() {
             <div className="editor-scroll-content">
               <div className="canvas-and-overlays" ref={canvasWrapperRef}
                 onClick={(e) => {
-                  // Deselect when clicking on the background (not on an overlay)
-                  if (e.target === e.currentTarget || e.target.tagName === 'CANVAS') {
+                  if (e.target === e.currentTarget || (e.target as HTMLElement).tagName === 'CANVAS') {
                     setSelectedOverlay(null);
                   }
                 }}
@@ -363,7 +374,6 @@ function App() {
                   zoom={zoom}
                 />
 
-                {/* Overlays container */}
                 <div className="overlay-container">
                   {images.map((img, i) => (
                     <ImageOverlay

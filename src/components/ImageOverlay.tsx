@@ -1,8 +1,10 @@
 import { Rnd } from 'react-rnd';
 import { X, Crop, Check, XCircle } from 'lucide-react';
 import { useState, useCallback } from 'react';
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
+import type { ImageOverlayData } from '../types';
 
-const cornerHandle = (cursor) => ({
+const cornerHandle = (cursor: string): CSSProperties => ({
   width: 14,
   height: 14,
   background: '#1a8cff',
@@ -14,8 +16,7 @@ const cornerHandle = (cursor) => ({
   boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
 });
 
-/* Thin bar style for crop edge handles */
-const edgeBarBase = {
+const edgeBarBase: CSSProperties = {
   position: 'absolute',
   background: '#1a8cff',
   borderRadius: 3,
@@ -23,18 +24,35 @@ const edgeBarBase = {
   boxShadow: '0 0 4px rgba(0,0,0,0.4)',
 };
 
-function CropEdgeBar({ edge, insets, imageWidth, imageHeight, onDrag }) {
-  const handleMouseDown = (e) => {
+type CropEdge = 'top' | 'right' | 'bottom' | 'left';
+
+interface CropInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+interface CropEdgeBarProps {
+  edge: CropEdge;
+  insets: CropInsets;
+  imageWidth: number;
+  imageHeight: number;
+  onDrag: (edge: CropEdge, value: number) => void;
+}
+
+function CropEdgeBar({ edge, insets, imageWidth, imageHeight, onDrag }: CropEdgeBarProps) {
+  const handleMouseDown = (e: ReactMouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     const startX = e.clientX;
     const startY = e.clientY;
     const startVal = insets[edge];
 
-    const onMouseMove = (moveE) => {
+    const onMouseMove = (moveE: globalThis.MouseEvent) => {
       const dx = moveE.clientX - startX;
       const dy = moveE.clientY - startY;
-      let newVal;
+      let newVal = 0;
       switch (edge) {
         case 'top':
           newVal = Math.max(0, Math.min(startVal + dy, imageHeight - insets.bottom - 30));
@@ -60,7 +78,7 @@ function CropEdgeBar({ edge, insets, imageWidth, imageHeight, onDrag }) {
     document.addEventListener('mouseup', onMouseUp);
   };
 
-  let style = { ...edgeBarBase };
+  const style: CSSProperties = { ...edgeBarBase };
   const barLen = 36;
   const barThick = 6;
 
@@ -98,23 +116,32 @@ function CropEdgeBar({ edge, insets, imageWidth, imageHeight, onDrag }) {
   return <div style={style} onMouseDown={handleMouseDown} />;
 }
 
-export default function ImageOverlay({ image, index, selected, onSelect, onUpdate, onDelete }) {
-  const [isCropping, setIsCropping] = useState(false);
-  const [cropInsets, setCropInsets] = useState({ top: 0, right: 0, bottom: 0, left: 0 });
+interface ImageOverlayProps {
+  image: ImageOverlayData;
+  index: number;
+  selected: boolean;
+  onSelect: () => void;
+  onUpdate: (index: number, image: ImageOverlayData) => void;
+  onDelete: (index: number) => void;
+}
 
-  const startCrop = (e) => {
+export default function ImageOverlay({ image, index, selected, onSelect, onUpdate, onDelete }: ImageOverlayProps) {
+  const [isCropping, setIsCropping] = useState(false);
+  const [cropInsets, setCropInsets] = useState<CropInsets>({ top: 0, right: 0, bottom: 0, left: 0 });
+
+  const startCrop = (e: ReactMouseEvent) => {
     e.stopPropagation();
     setIsCropping(true);
     setCropInsets({ top: 0, right: 0, bottom: 0, left: 0 });
   };
 
-  const cancelCrop = (e) => {
+  const cancelCrop = (e: ReactMouseEvent) => {
     e.stopPropagation();
     setIsCropping(false);
     setCropInsets({ top: 0, right: 0, bottom: 0, left: 0 });
   };
 
-  const applyCrop = useCallback((e) => {
+  const applyCrop = useCallback((e: ReactMouseEvent) => {
     e.stopPropagation();
     const { top, right, bottom, left } = cropInsets;
     if (top === 0 && right === 0 && bottom === 0 && left === 0) {
@@ -122,7 +149,6 @@ export default function ImageOverlay({ image, index, selected, onSelect, onUpdat
       return;
     }
 
-    // Use canvas to actually crop the image data
     const imgEl = new Image();
     imgEl.onload = () => {
       const scaleX = imgEl.naturalWidth / image.width;
@@ -136,7 +162,7 @@ export default function ImageOverlay({ image, index, selected, onSelect, onUpdat
       const canvas = document.createElement('canvas');
       canvas.width = Math.round(sw);
       canvas.height = Math.round(sh);
-      const ctx = canvas.getContext('2d');
+      const ctx = canvas.getContext('2d')!;
       ctx.drawImage(imgEl, sx, sy, sw, sh, 0, 0, sw, sh);
 
       const croppedSrc = canvas.toDataURL('image/png');
@@ -154,7 +180,7 @@ export default function ImageOverlay({ image, index, selected, onSelect, onUpdat
     imgEl.src = image.src;
   }, [cropInsets, image, index, onUpdate]);
 
-  const handleEdgeDrag = useCallback((edge, value) => {
+  const handleEdgeDrag = useCallback((edge: CropEdge, value: number) => {
     setCropInsets(prev => ({ ...prev, [edge]: value }));
   }, []);
 
@@ -163,11 +189,11 @@ export default function ImageOverlay({ image, index, selected, onSelect, onUpdat
       size={{ width: image.width, height: image.height }}
       position={{ x: image.x, y: image.y }}
       onDragStart={() => { if (!selected) onSelect(); }}
-      onDragStop={(e, d) => {
+      onDragStop={(_e, d) => {
         if (isCropping) return;
         onUpdate(index, { ...image, x: d.x, y: d.y });
       }}
-      onResizeStop={(e, direction, ref, delta, position) => {
+      onResizeStop={(_e, _direction, ref, _delta, position) => {
         if (isCropping) return;
         onUpdate(index, {
           ...image,
@@ -212,7 +238,6 @@ export default function ImageOverlay({ image, index, selected, onSelect, onUpdat
         bottomRight: { ...cornerHandle('nwse-resize'), bottom: -7, right: -7 },
       }}
     >
-      {/* Action buttons — only shown when selected */}
       {selected && (
         <div style={{
           position: 'absolute',
@@ -225,128 +250,50 @@ export default function ImageOverlay({ image, index, selected, onSelect, onUpdat
         }}>
         {isCropping ? (
           <>
-            <button
-              onClick={applyCrop}
-              style={{
-                width: 26, height: 26, borderRadius: '50%',
-                background: '#22c55e', border: 'none', color: '#fff',
-                cursor: 'pointer', display: 'flex', alignItems: 'center',
-                justifyContent: 'center', padding: 0,
-                boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
-              }}
-              title="Apply crop"
-            >
-              <Check size={14} />
-            </button>
-            <button
-              onClick={cancelCrop}
-              style={{
-                width: 26, height: 26, borderRadius: '50%',
-                background: '#888', border: 'none', color: '#fff',
-                cursor: 'pointer', display: 'flex', alignItems: 'center',
-                justifyContent: 'center', padding: 0,
-                boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
-              }}
-              title="Cancel crop"
-            >
-              <XCircle size={14} />
-            </button>
+            <button onClick={applyCrop}
+              style={{ width: 26, height: 26, borderRadius: '50%', background: '#22c55e', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, boxShadow: '0 1px 4px rgba(0,0,0,0.3)' }}
+              title="Apply crop"><Check size={14} /></button>
+            <button onClick={cancelCrop}
+              style={{ width: 26, height: 26, borderRadius: '50%', background: '#888', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, boxShadow: '0 1px 4px rgba(0,0,0,0.3)' }}
+              title="Cancel crop"><XCircle size={14} /></button>
           </>
         ) : (
           <>
-            <button
-              onClick={startCrop}
-              style={{
-                width: 26, height: 26, borderRadius: '50%',
-                background: '#1a8cff', border: 'none', color: '#fff',
-                cursor: 'pointer', display: 'flex', alignItems: 'center',
-                justifyContent: 'center', padding: 0,
-                boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
-              }}
-              title="Crop image"
-            >
-              <Crop size={13} />
-            </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); onDelete(index); }}
-              style={{
-                width: 26, height: 26, borderRadius: '50%',
-                background: '#e94560', border: 'none', color: '#fff',
-                cursor: 'pointer', display: 'flex', alignItems: 'center',
-                justifyContent: 'center', padding: 0,
-                boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
-              }}
-              title="Remove image"
-            >
-              <X size={14} />
-            </button>
+            <button onClick={startCrop}
+              style={{ width: 26, height: 26, borderRadius: '50%', background: '#1a8cff', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, boxShadow: '0 1px 4px rgba(0,0,0,0.3)' }}
+              title="Crop image"><Crop size={13} /></button>
+            <button onClick={(e) => { e.stopPropagation(); onDelete(index); }}
+              style={{ width: 26, height: 26, borderRadius: '50%', background: '#e94560', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, boxShadow: '0 1px 4px rgba(0,0,0,0.3)' }}
+              title="Remove image"><X size={14} /></button>
           </>
         )}
       </div>
       )}
 
-      {/* Image + crop overlays — overflow:hidden keeps crop darkening contained */}
       <div style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden' }}>
         <img
           src={image.src}
           alt="overlay"
           draggable={false}
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'contain',
-            pointerEvents: 'none',
-            userSelect: 'none',
-          }}
+          style={{ width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none', userSelect: 'none' }}
         />
 
         {isCropping && (
           <>
             {cropInsets.top > 0 && (
-              <div style={{
-                position: 'absolute', top: 0, left: 0, right: 0,
-                height: cropInsets.top,
-                background: 'rgba(0,0,0,0.45)',
-                pointerEvents: 'none',
-              }} />
+              <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: cropInsets.top, background: 'rgba(0,0,0,0.45)', pointerEvents: 'none' }} />
             )}
             {cropInsets.bottom > 0 && (
-              <div style={{
-                position: 'absolute', bottom: 0, left: 0, right: 0,
-                height: cropInsets.bottom,
-                background: 'rgba(0,0,0,0.45)',
-                pointerEvents: 'none',
-              }} />
+              <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: cropInsets.bottom, background: 'rgba(0,0,0,0.45)', pointerEvents: 'none' }} />
             )}
             {cropInsets.left > 0 && (
-              <div style={{
-                position: 'absolute',
-                top: cropInsets.top, bottom: cropInsets.bottom, left: 0,
-                width: cropInsets.left,
-                background: 'rgba(0,0,0,0.45)',
-                pointerEvents: 'none',
-              }} />
+              <div style={{ position: 'absolute', top: cropInsets.top, bottom: cropInsets.bottom, left: 0, width: cropInsets.left, background: 'rgba(0,0,0,0.45)', pointerEvents: 'none' }} />
             )}
             {cropInsets.right > 0 && (
-              <div style={{
-                position: 'absolute',
-                top: cropInsets.top, bottom: cropInsets.bottom, right: 0,
-                width: cropInsets.right,
-                background: 'rgba(0,0,0,0.45)',
-                pointerEvents: 'none',
-              }} />
+              <div style={{ position: 'absolute', top: cropInsets.top, bottom: cropInsets.bottom, right: 0, width: cropInsets.right, background: 'rgba(0,0,0,0.45)', pointerEvents: 'none' }} />
             )}
 
-            <div style={{
-              position: 'absolute',
-              top: cropInsets.top,
-              left: cropInsets.left,
-              right: cropInsets.right,
-              bottom: cropInsets.bottom,
-              border: '1.5px dashed rgba(255,255,255,0.7)',
-              pointerEvents: 'none',
-              zIndex: 22,
-            }} />
+            <div style={{ position: 'absolute', top: cropInsets.top, left: cropInsets.left, right: cropInsets.right, bottom: cropInsets.bottom, border: '1.5px dashed rgba(255,255,255,0.7)', pointerEvents: 'none', zIndex: 22 }} />
 
             <CropEdgeBar edge="top" insets={cropInsets} imageWidth={image.width} imageHeight={image.height} onDrag={handleEdgeDrag} />
             <CropEdgeBar edge="bottom" insets={cropInsets} imageWidth={image.width} imageHeight={image.height} onDrag={handleEdgeDrag} />

@@ -1,5 +1,7 @@
-import { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
+import type { PageDimensions } from '../types';
 
 // Set worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -7,30 +9,43 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
-export default function PdfViewer({ pdfDoc, pageIndex, onDimensionsReady, containerSize, zoom }) {
-  const canvasRef = useRef(null);
-  const [_rendering, setRendering] = useState(false);
-  const renderTaskRef = useRef(null);
+interface PdfViewerProps {
+  pdfDoc: PDFDocumentProxy;
+  pageIndex: number;
+  onDimensionsReady: (pageIndex: number, dims: PageDimensions) => void;
+  containerSize: { width: number; height: number };
+  zoom: number | null;
+}
+
+export default function PdfViewer({ pdfDoc, pageIndex, onDimensionsReady, containerSize, zoom }: PdfViewerProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const renderTaskRef = useRef<RenderTask | null>(null);
+  const renderingRef = useRef(false);
 
   const renderPage = useCallback(async () => {
     if (!pdfDoc || !canvasRef.current) return;
+
+    // Cancel any in-flight render
     if (renderTaskRef.current) {
       renderTaskRef.current.cancel();
+      renderTaskRef.current = null;
     }
 
-    setRendering(true);
+    // Wait for the previous render to fully release the canvas
+    if (renderingRef.current) return;
+    renderingRef.current = true;
+
     try {
       const page = await pdfDoc.getPage(pageIndex + 1);
       const canvas = canvasRef.current;
-      const context = canvas.getContext('2d');
+      if (!canvas) return;
+      const context = canvas.getContext('2d')!;
 
       const baseViewport = page.getViewport({ scale: 1 });
-      let scale;
+      let scale: number;
       if (zoom != null) {
-        // Manual zoom: zoom=1 means 100% of PDF native size
         scale = zoom;
       } else {
-        // Auto-fit to container
         const containerWidth = containerSize?.width || 800;
         const containerHeight = containerSize?.height || 600;
         const scaleW = (containerWidth - 32) / baseViewport.width;
@@ -43,37 +58,40 @@ export default function PdfViewer({ pdfDoc, pageIndex, onDimensionsReady, contai
       canvas.width = viewport.width;
       canvas.height = viewport.height;
 
-      const renderContext = {
+      const task = page.render({
         canvasContext: context,
-        viewport: viewport,
-      };
-
-      const task = page.render(renderContext);
+        viewport,
+        canvas,
+      });
       renderTaskRef.current = task;
       await task.promise;
 
-      if (onDimensionsReady) {
-        onDimensionsReady(pageIndex, {
-          renderWidth: viewport.width,
-          renderHeight: viewport.height,
-        });
-      }
-    } catch (err) {
-      if (err?.name !== 'RenderingCancelledException') {
+      onDimensionsReady(pageIndex, {
+        renderWidth: viewport.width,
+        renderHeight: viewport.height,
+      });
+    } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'name' in err && err.name !== 'RenderingCancelledException') {
         console.error('Error rendering PDF page:', err);
       }
     } finally {
-      setRendering(false);
+      renderingRef.current = false;
+      renderTaskRef.current = null;
     }
   }, [pdfDoc, pageIndex, onDimensionsReady, containerSize, zoom]);
 
   useEffect(() => {
     renderPage();
+    return () => {
+      if (renderTaskRef.current) {
+        renderTaskRef.current.cancel();
+        renderTaskRef.current = null;
+      }
+    };
   }, [renderPage]);
 
-  // Re-render on window resize
   useEffect(() => {
-    const handleResize = () => renderPage();
+    const handleResize = () => { renderPage(); };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [renderPage]);
