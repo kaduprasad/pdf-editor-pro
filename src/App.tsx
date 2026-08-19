@@ -35,6 +35,7 @@ function App() {
 
   const { overlays, getPageOverlays, setPageOverlays, updatePageOverlays, clearAll } = useSessionStorage();
   const editorWrapperRef = useRef<HTMLDivElement>(null);
+  const editorAreaRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
 
   // Measure the editor wrapper so PdfViewer can scale to fill it
@@ -75,9 +76,10 @@ function App() {
     return () => window.removeEventListener('wheel', handleWheel);
   }, [pdfDoc]);
 
-  // Reset selection on page change
+  // Reset selection and scroll back to the top of the page on page change
   useEffect(() => {
     setSelectedOverlay(null);
+    editorAreaRef.current?.scrollTo({ top: 0, left: 0 });
   }, [currentPage]);
 
   // Current page overlays
@@ -138,7 +140,8 @@ function App() {
     setPageDimensions(prev => ({ ...prev, [_pageIdx]: dims }));
   }, []);
 
-  // Track mouse position relative to the canvas-and-overlays container
+  // Track mouse position relative to the canvas-and-overlays container.
+  // Only updated while the cursor is over the page, so toolbar clicks reuse the last on-page position.
   const mousePosRef = useRef({ x: 50, y: 50 });
   const canvasWrapperRef = useRef<HTMLDivElement>(null);
 
@@ -146,10 +149,10 @@ function App() {
     const handleMouseMove = (e: MouseEvent) => {
       if (!canvasWrapperRef.current) return;
       const rect = canvasWrapperRef.current.getBoundingClientRect();
-      mousePosRef.current = {
-        x: Math.max(0, e.clientX - rect.left),
-        y: Math.max(0, e.clientY - rect.top),
-      };
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
+      mousePosRef.current = { x, y };
     };
     window.addEventListener('mousemove', handleMouseMove);
     return () => window.removeEventListener('mousemove', handleMouseMove);
@@ -236,12 +239,18 @@ function App() {
 
   // ---- Text handling ----
   const handleAddText = useCallback(() => {
+    const width = 200;
+    const height = 40;
+    const dims = pageDimensions[currentPage];
+    const { x, y } = mousePosRef.current;
+    const maxX = dims ? Math.max(0, dims.renderWidth - width) : x;
+    const maxY = dims ? Math.max(0, dims.renderHeight - height) : y;
     const newText: TextOverlayData = {
       content: '',
-      x: 80,
-      y: 80,
-      width: 200,
-      height: 40,
+      x: Math.min(Math.max(0, x), maxX),
+      y: Math.min(Math.max(0, y - height / 2), maxY),
+      width,
+      height,
       fontSize,
       bold: isBold,
     };
@@ -250,7 +259,7 @@ function App() {
       ...current,
       texts: [...(current.texts || []), newText],
     });
-  }, [currentPage, fontSize, isBold, getPageOverlays, setPageOverlays]);
+  }, [currentPage, fontSize, isBold, pageDimensions, getPageOverlays, setPageOverlays]);
 
   const updateText = useCallback((index: number, updatedText: TextOverlayData) => {
     const current = getPageOverlays(currentPage);
@@ -333,7 +342,7 @@ function App() {
           </div>
         )}
 
-        <div className="editor-area">
+        <div className="editor-area" ref={editorAreaRef}>
           {!pdfDoc ? (
             <div className="editor-scroll-content">
               <div className="empty-state">
