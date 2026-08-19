@@ -24,11 +24,14 @@
 
 .editor-scroll-content {
   display: flex;
-  align-items: center;
-  justify-content: center;
   min-width: 100%;
   min-height: 100%;
   padding: 20px;
+}
+
+/* auto margins center the page but keep the top reachable when it overflows */
+.editor-scroll-content > * {
+  margin: auto;
 }
 
 .canvas-and-overlays {
@@ -147,4 +150,3 @@
   z-index: 50;
   pointer-events: none;
 }
-
