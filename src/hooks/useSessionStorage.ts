@@ -3,11 +3,12 @@ import type { OverlaysByPage, PageOverlays } from '../types';
 
 const SESSION_KEY = 'pdf-editor-pro-overlays';
 
-function stripForStorage(overlays: OverlaysByPage): Record<string, { texts: PageOverlays['texts']; images: Array<Omit<PageOverlays['images'][number], 'src'>> }> {
-  const cleaned: Record<string, { texts: PageOverlays['texts']; images: Array<Omit<PageOverlays['images'][number], 'src'>> }> = {};
+function stripForStorage(overlays: OverlaysByPage): Record<string, { texts: PageOverlays['texts']; shapes: PageOverlays['shapes']; images: Array<Omit<PageOverlays['images'][number], 'src'>> }> {
+  const cleaned: Record<string, { texts: PageOverlays['texts']; shapes: PageOverlays['shapes']; images: Array<Omit<PageOverlays['images'][number], 'src'>> }> = {};
   for (const [page, data] of Object.entries(overlays)) {
     cleaned[page] = {
       texts: data.texts || [],
+      shapes: data.shapes || [],
       images: (data.images || []).map(img => ({
         x: img.x,
         y: img.y,
