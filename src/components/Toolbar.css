@@ -72,6 +72,12 @@
   border-color: var(--accent-hover);
 }
 
+.toolbar-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
 .toolbar-btn-danger {
   color: #ff6b6b;
   border-color: rgba(255, 107, 107, 0.3);
