@@ -9,9 +9,11 @@ import Toolbar from './components/Toolbar';
 import PdfViewer from './components/PdfViewer';
 import ImageOverlay from './components/ImageOverlay';
 import TextOverlay from './components/TextOverlay';
+import ShapeOverlay from './components/ShapeOverlay';
+import DrawingLayer from './components/DrawingLayer';
 import { useSessionStorage } from './hooks/useSessionStorage';
 import { exportPdfWithEdits, extractOverlayData } from './utils/pdfExport';
-import type { ImageOverlayData, TextOverlayData, PageDimensionsMap, PageDimensions, SelectedOverlay } from './types';
+import type { ImageOverlayData, TextOverlayData, ShapeOverlayData, ShapeKind, PageDimensionsMap, PageDimensions, SelectedOverlay } from './types';
 import './App.css';
 
 // Worker
@@ -32,9 +34,24 @@ function App() {
   const [pageDimensions, setPageDimensions] = useState<PageDimensionsMap>({});
   const [zoom, setZoom] = useState<number | null>(null);
   const [selectedOverlay, setSelectedOverlay] = useState<SelectedOverlay | null>(null);
+  const [activeTool, setActiveTool] = useState<ShapeKind | null>(null);
 
   const { overlays, getPageOverlays, setPageOverlays, updatePageOverlays, clearAll } = useSessionStorage();
   const editorWrapperRef = useRef<HTMLDivElement>(null);
+
+  // Warn before leaving/closing the page if there are unsaved edits
+  useEffect(() => {
+    const hasEdits = pdfDoc && Object.values(overlays).some(
+      p => (p.images?.length || 0) + (p.texts?.length || 0) + (p.shapes?.length || 0) > 0
+    );
+    if (!hasEdits) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = ''; // required by some browsers to show the confirmation dialog
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [pdfDoc, overlays]);
   const editorAreaRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
 
@@ -86,6 +103,7 @@ function App() {
   const pageOverlays = getPageOverlays(currentPage);
   const images = pageOverlays.images || [];
   const texts = pageOverlays.texts || [];
+  const shapes = pageOverlays.shapes || [];
 
   // ---- PDF Loading ----
   const loadPdf = useCallback(async (arrayBuffer: ArrayBuffer, fileName: string) => {
@@ -120,6 +138,7 @@ function App() {
     const file = e.target.files?.[0];
     if (!file) return;
     clearAll();
+    historyRef.current = [];
     const reader = new FileReader();
     reader.onload = () => loadPdf(reader.result as ArrayBuffer, file.name);
     reader.readAsArrayBuffer(file);
@@ -158,6 +177,29 @@ function App() {
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, []);
 
+  // ---- Undo history (one entry per added overlay; undo removes that item) ----
+  const historyRef = useRef<Array<{ page: number; type: 'image' | 'text' | 'shape' }>>([]);
+
+  const pushHistory = useCallback((page: number, type: 'image' | 'text' | 'shape') => {
+    historyRef.current.push({ page, type });
+    if (historyRef.current.length > 100) historyRef.current.shift();
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    const entry = historyRef.current.pop();
+    if (!entry) return;
+    updatePageOverlays(entry.page, (current) => {
+      if (entry.type === 'image') {
+        return { ...current, images: (current.images || []).slice(0, -1) };
+      }
+      if (entry.type === 'text') {
+        return { ...current, texts: (current.texts || []).slice(0, -1) };
+      }
+      return { ...current, shapes: (current.shapes || []).slice(0, -1) };
+    });
+    setSelectedOverlay(null);
+  }, [updatePageOverlays]);
+
   // ---- Image handling ----
   const addImageFromDataUrl = useCallback((dataUrl: string, position?: { x: number; y: number }) => {
     const img = new Image();
@@ -175,6 +217,7 @@ function App() {
         width: w,
         height: h,
       };
+      pushHistory(currentPage, 'image');
       updatePageOverlays(currentPage, (prev) => ({
         ...prev,
         images: [...(prev.images || []), newImage],
@@ -184,7 +227,7 @@ function App() {
       console.error('Failed to load image:', err);
     };
     img.src = dataUrl;
-  }, [currentPage, updatePageOverlays]);
+  }, [currentPage, updatePageOverlays, pushHistory]);
 
   const handleAddImage = useCallback(() => {
     const input = document.createElement('input');
@@ -255,11 +298,12 @@ function App() {
       bold: isBold,
     };
     const current = getPageOverlays(currentPage);
+    pushHistory(currentPage, 'text');
     setPageOverlays(currentPage, {
       ...current,
       texts: [...(current.texts || []), newText],
     });
-  }, [currentPage, fontSize, isBold, pageDimensions, getPageOverlays, setPageOverlays]);
+  }, [currentPage, fontSize, isBold, pageDimensions, getPageOverlays, setPageOverlays, pushHistory]);
 
   const updateText = useCallback((index: number, updatedText: TextOverlayData) => {
     const current = getPageOverlays(currentPage);
@@ -275,10 +319,40 @@ function App() {
     setPageOverlays(currentPage, { ...current, texts: newTexts });
   }, [currentPage, getPageOverlays, setPageOverlays]);
 
+  // ---- Shape handling ----
+  // Tool stays active after each shape so the user can keep drawing (toggle off to stop)
+  const toggleTool = useCallback((tool: ShapeKind) => {
+    setActiveTool(prev => (prev === tool ? null : tool));
+    setSelectedOverlay(null);
+  }, []);
+
+  const addShape = useCallback((shape: ShapeOverlayData) => {
+    pushHistory(currentPage, 'shape');
+    updatePageOverlays(currentPage, (prev) => ({
+      ...prev,
+      shapes: [...(prev.shapes || []), shape],
+    }));
+  }, [currentPage, updatePageOverlays, pushHistory]);
+
+  const updateShape = useCallback((index: number, updatedShape: ShapeOverlayData) => {
+    const current = getPageOverlays(currentPage);
+    const newShapes = [...(current.shapes || [])];
+    newShapes[index] = updatedShape;
+    setPageOverlays(currentPage, { ...current, shapes: newShapes });
+  }, [currentPage, getPageOverlays, setPageOverlays]);
+
+  const deleteShape = useCallback((index: number) => {
+    const current = getPageOverlays(currentPage);
+    const newShapes = [...(current.shapes || [])];
+    newShapes.splice(index, 1);
+    setPageOverlays(currentPage, { ...current, shapes: newShapes });
+    setSelectedOverlay(null);
+  }, [currentPage, getPageOverlays, setPageOverlays]);
+
   // ---- Clear page ----
   const handleClearPage = useCallback(() => {
     if (confirm('Clear all overlays on this page?')) {
-      setPageOverlays(currentPage, { images: [], texts: [] });
+      setPageOverlays(currentPage, { images: [], texts: [], shapes: [] });
     }
   }, [currentPage, setPageOverlays]);
 
@@ -305,12 +379,24 @@ function App() {
     const handleKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+      const key = e.key.toLowerCase();
+      if (e.ctrlKey && key === 'z') {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+      if (e.shiftKey && !e.ctrlKey && !e.altKey) {
+        if (key === 't') { e.preventDefault(); handleAddText(); return; }
+        if (key === 'l') { e.preventDefault(); toggleTool('line'); return; }
+        if (key === 'b') { e.preventDefault(); toggleTool('rect'); return; }
+      }
       if (e.key === 'ArrowLeft') handlePrevPage();
       if (e.key === 'ArrowRight') handleNextPage();
+      if (e.key === 'Escape') setActiveTool(null);
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [pdfDoc, handlePrevPage, handleNextPage]);
+  }, [pdfDoc, handlePrevPage, handleNextPage, handleAddText, toggleTool, handleUndo]);
 
   return (
     <div className="app">
@@ -329,6 +415,8 @@ function App() {
         onFontSizeChange={setFontSize}
         onBoldToggle={() => setIsBold(b => !b)}
         onClearPage={handleClearPage}
+        activeTool={activeTool}
+        onToggleTool={toggleTool}
         zoom={zoom}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
@@ -404,7 +492,22 @@ function App() {
                       onDelete={deleteText}
                     />
                   ))}
+                  {shapes.map((shape, i) => (
+                    <ShapeOverlay
+                      key={`shape-${currentPage}-${i}`}
+                      shape={shape}
+                      index={i}
+                      selected={selectedOverlay?.type === 'shape' && selectedOverlay?.index === i}
+                      onSelect={() => setSelectedOverlay({ type: 'shape', index: i })}
+                      onUpdate={updateShape}
+                      onDelete={deleteShape}
+                    />
+                  ))}
                 </div>
+
+                {activeTool && (
+                  <DrawingLayer tool={activeTool} onCommit={addShape} />
+                )}
               </div>
             </div>
           )}
