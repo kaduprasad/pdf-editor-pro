@@ -100,6 +100,30 @@ export async function exportPdfWithEdits(
       }
     }
 
+    if (pageData.shapes) {
+      for (const shape of pageData.shapes) {
+        const strokeW = Math.max(0.75, 2 * scaleX);
+        if (shape.kind === 'line') {
+          const yPdf = pdfH - shape.y * scaleY;
+          page.drawLine({
+            start: { x: shape.x * scaleX, y: yPdf },
+            end: { x: (shape.x + shape.width) * scaleX, y: yPdf },
+            thickness: strokeW,
+            color: rgb(0, 0, 0),
+          });
+        } else {
+          page.drawRectangle({
+            x: shape.x * scaleX,
+            y: pdfH - (shape.y * scaleY) - (shape.height * scaleY),
+            width: shape.width * scaleX,
+            height: shape.height * scaleY,
+            borderWidth: strokeW,
+            borderColor: rgb(0, 0, 0),
+          });
+        }
+      }
+    }
+
     if (pageData.texts) {
       for (const txt of pageData.texts) {
         const font = txt.bold ? helveticaBold : helvetica;
