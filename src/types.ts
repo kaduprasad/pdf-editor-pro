@@ -16,9 +16,20 @@ export interface TextOverlayData {
   bold: boolean;
 }
 
+export type ShapeKind = 'line' | 'rect';
+
+export interface ShapeOverlayData {
+  kind: ShapeKind;
+  x: number;
+  y: number;
+  width: number;
+  height: number; // 0 for lines
+}
+
 export interface PageOverlays {
   images: ImageOverlayData[];
   texts: TextOverlayData[];
+  shapes?: ShapeOverlayData[];
 }
 
 export type OverlaysByPage = Record<number, PageOverlays>;
@@ -31,6 +42,6 @@ export interface PageDimensions {
 export type PageDimensionsMap = Record<number, PageDimensions>;
 
 export interface SelectedOverlay {
-  type: 'image' | 'text';
+  type: 'image' | 'text' | 'shape';
   index: number;
 }

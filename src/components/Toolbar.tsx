@@ -1,9 +1,23 @@
-import type { ChangeEvent } from 'react';
+import type { ChangeEvent } from "react";
 import {
-  Upload, Download, ImagePlus, Type, ChevronLeft, ChevronRight,
-  Bold, Minus, Plus, Trash2, ClipboardPaste, ZoomIn, ZoomOut,
-} from 'lucide-react';
-import './Toolbar.css';
+  Upload,
+  Download,
+  ImagePlus,
+  Type,
+  ChevronLeft,
+  ChevronRight,
+  Bold,
+  Minus,
+  Plus,
+  Trash2,
+  ClipboardPaste,
+  ZoomIn,
+  ZoomOut,
+  PenLine,
+  Square,
+} from "lucide-react";
+import type { ShapeKind } from "../types";
+import "./Toolbar.css";
 
 interface ToolbarProps {
   hasPdf: boolean;
@@ -20,6 +34,8 @@ interface ToolbarProps {
   onFontSizeChange: (size: number) => void;
   onBoldToggle: () => void;
   onClearPage: () => void;
+  activeTool: ShapeKind | null;
+  onToggleTool: (tool: ShapeKind) => void;
   zoom: number | null;
   onZoomIn: () => void;
   onZoomOut: () => void;
@@ -27,9 +43,26 @@ interface ToolbarProps {
 }
 
 export default function Toolbar({
-  hasPdf, currentPage, totalPages, fontSize, isBold,
-  onUpload, onDownload, onAddImage, onAddText, onPrevPage, onNextPage,
-  onFontSizeChange, onBoldToggle, onClearPage, zoom, onZoomIn, onZoomOut, onZoomFit,
+  hasPdf,
+  currentPage,
+  totalPages,
+  fontSize,
+  isBold,
+  onUpload,
+  onDownload,
+  onAddImage,
+  onAddText,
+  onPrevPage,
+  onNextPage,
+  onFontSizeChange,
+  onBoldToggle,
+  onClearPage,
+  activeTool,
+  onToggleTool,
+  zoom,
+  onZoomIn,
+  onZoomOut,
+  onZoomFit,
 }: ToolbarProps) {
   return (
     <div className="toolbar">
@@ -43,45 +76,98 @@ export default function Toolbar({
       <label className="toolbar-btn toolbar-btn-primary" title="Upload PDF">
         <Upload size={18} />
         <span>Upload</span>
-        <input type="file" accept="application/pdf" onChange={onUpload} style={{ display: 'none' }} />
+        <input
+          type="file"
+          accept="application/pdf"
+          onChange={onUpload}
+          style={{ display: "none" }}
+        />
       </label>
 
       {hasPdf && (
         <>
           <div className="toolbar-divider" />
 
-          <button className="toolbar-btn" onClick={onAddImage} title="Add image from file">
-            <ImagePlus size={18} /><span>Image</span>
+          <button
+            className="toolbar-btn"
+            onClick={onAddImage}
+            title="Add image from file"
+          >
+            <ImagePlus size={18} />
+            <span>Image</span>
           </button>
 
-          <button className="toolbar-btn" onClick={onAddText} title="Add text box">
-            <Type size={18} /><span>Text</span>
+          <button
+            className="toolbar-btn"
+            onClick={onAddText}
+            title="Add text box (Shift+T)"
+          >
+            <Type size={18} />
+            <span>Text</span>
+          </button>
+
+          <button
+            className={`toolbar-btn ${activeTool === "line" ? "active" : ""}`}
+            onClick={() => onToggleTool("line")}
+            title="Line tool (Shift+L) — drag to draw a horizontal line (click again to deselect)"
+          >
+            <PenLine size={18} />
+            <span>Line</span>
+          </button>
+
+          <button
+            className={`toolbar-btn ${activeTool === "rect" ? "active" : ""}`}
+            onClick={() => onToggleTool("rect")}
+            title="Rectangle tool (Shift+B) — drag to draw a box (click again to deselect)"
+          >
+            <Square size={18} />
+            <span>Box</span>
           </button>
 
           <div className="toolbar-divider" />
 
           <div className="toolbar-group" title="Font size">
-            <button className="toolbar-btn-sm" onClick={() => onFontSizeChange(Math.max(8, fontSize - 2))}>
+            <button
+              className="toolbar-btn-sm"
+              onClick={() => onFontSizeChange(Math.max(8, fontSize - 2))}
+            >
               <Minus size={14} />
             </button>
             <span className="toolbar-font-size">{fontSize}px</span>
-            <button className="toolbar-btn-sm" onClick={() => onFontSizeChange(Math.min(72, fontSize + 2))}>
+            <button
+              className="toolbar-btn-sm"
+              onClick={() => onFontSizeChange(Math.min(72, fontSize + 2))}
+            >
               <Plus size={14} />
             </button>
           </div>
 
-          <button className={`toolbar-btn-sm ${isBold ? 'active' : ''}`} onClick={onBoldToggle} title="Bold">
+          <button
+            className={`toolbar-btn-sm ${isBold ? "active" : ""}`}
+            onClick={onBoldToggle}
+            title="Bold"
+          >
             <Bold size={16} />
           </button>
 
           <div className="toolbar-divider" />
 
           <div className="toolbar-group">
-            <button className="toolbar-btn-sm" onClick={onPrevPage} disabled={currentPage <= 0}>
+            <button
+              className="toolbar-btn-sm"
+              onClick={onPrevPage}
+              disabled={currentPage <= 0}
+            >
               <ChevronLeft size={18} />
             </button>
-            <span className="toolbar-page-info">{currentPage + 1} / {totalPages}</span>
-            <button className="toolbar-btn-sm" onClick={onNextPage} disabled={currentPage >= totalPages - 1}>
+            <span className="toolbar-page-info">
+              {currentPage + 1} / {totalPages}
+            </span>
+            <button
+              className="toolbar-btn-sm"
+              onClick={onNextPage}
+              disabled={currentPage >= totalPages - 1}
+            >
               <ChevronRight size={18} />
             </button>
           </div>
@@ -89,25 +175,47 @@ export default function Toolbar({
           <div className="toolbar-divider" />
 
           <div className="toolbar-group">
-            <button className="toolbar-btn-sm" onClick={onZoomOut} title="Zoom out (Ctrl+Scroll)">
+            <button
+              className="toolbar-btn-sm"
+              onClick={onZoomOut}
+              title="Zoom out (Ctrl+Scroll)"
+            >
               <ZoomOut size={16} />
             </button>
-            <button className="toolbar-btn-zoom-label" onClick={onZoomFit} title="Fit to screen">
-              {zoom != null ? `${Math.round(zoom * 100)}%` : 'Fit'}
+            <button
+              className="toolbar-btn-zoom-label"
+              onClick={onZoomFit}
+              title="Fit to screen"
+            >
+              {zoom != null ? `${Math.round(zoom * 100)}%` : "Fit"}
             </button>
-            <button className="toolbar-btn-sm" onClick={onZoomIn} title="Zoom in (Ctrl+Scroll)">
+            <button
+              className="toolbar-btn-sm"
+              onClick={onZoomIn}
+              title="Zoom in (Ctrl+Scroll)"
+            >
               <ZoomIn size={16} />
             </button>
           </div>
 
           <div className="toolbar-divider" />
 
-          <button className="toolbar-btn toolbar-btn-danger" onClick={onClearPage} title="Clear overlays on this page">
-            <Trash2 size={18} /><span>Clear</span>
+          <button
+            className="toolbar-btn toolbar-btn-danger"
+            onClick={onClearPage}
+            title="Clear overlays on this page"
+          >
+            <Trash2 size={18} />
+            <span>Clear</span>
           </button>
 
-          <button className="toolbar-btn toolbar-btn-primary" onClick={onDownload} title="Download edited PDF">
-            <Download size={18} /><span>Download</span>
+          <button
+            className="toolbar-btn toolbar-btn-primary"
+            onClick={onDownload}
+            title="Download edited PDF"
+          >
+            <Download size={18} />
+            <span>Download</span>
           </button>
         </>
       )}
