@@ -3,7 +3,7 @@ import type { ChangeEvent } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { saveAs } from 'file-saver';
-import { FileUp } from 'lucide-react';
+import { FileUp, RotateCcw, X } from 'lucide-react';
 
 import Toolbar from './components/Toolbar';
 import PdfViewer from './components/PdfViewer';
@@ -11,9 +11,26 @@ import ImageOverlay from './components/ImageOverlay';
 import TextOverlay from './components/TextOverlay';
 import ShapeOverlay from './components/ShapeOverlay';
 import DrawingLayer from './components/DrawingLayer';
+import WatermarkOverlay from './components/WatermarkOverlay';
+import WatermarkPanel from './components/WatermarkPanel';
+import TemplatesMenu from './components/TemplatesMenu';
+import MoreMenu from './components/MoreMenu';
 import { useSessionStorage } from './hooks/useSessionStorage';
 import { exportPdfWithEdits, extractOverlayData } from './utils/pdfExport';
-import type { ImageOverlayData, TextOverlayData, ShapeOverlayData, ShapeKind, PageDimensionsMap, PageDimensions, SelectedOverlay } from './types';
+import { measureWatermarkText } from './utils/watermark';
+import { saveTemplate } from './utils/templates';
+import { buildPageNumberOverlay } from './utils/pageNumbers';
+import {
+  getSessionId,
+  newSessionId,
+  savePdfBytes,
+  saveBackupMeta,
+  listBackups,
+  getBackup,
+  deleteBackup,
+} from './utils/backup';
+import type { BackupMeta } from './utils/backup';
+import type { ImageOverlayData, TextOverlayData, ShapeOverlayData, ToolKind, PageDimensionsMap, PageDimensions, SelectedOverlay, WatermarkData, TextWatermarkData, ImageWatermarkData, OverlaysByPage, PageNumberOptions } from './types';
 import './App.css';
 
 // Worker
@@ -21,6 +38,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.mjs',
   import.meta.url
 ).toString();
+
+const STROKE_WIDTH_KEY = 'pdf-editor-pro-stroke-width';
+const STROKE_LEVELS = [0.5, 1, 2, 3];
+const AUTOSAVE_INTERVAL_MS = 30_000;
 
 function App() {
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
@@ -34,7 +55,23 @@ function App() {
   const [pageDimensions, setPageDimensions] = useState<PageDimensionsMap>({});
   const [zoom, setZoom] = useState<number | null>(null);
   const [selectedOverlay, setSelectedOverlay] = useState<SelectedOverlay | null>(null);
-  const [activeTool, setActiveTool] = useState<ShapeKind | null>(null);
+  const [activeTool, setActiveTool] = useState<ToolKind | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [showMore, setShowMore] = useState(false);
+  const [backupList, setBackupList] = useState<BackupMeta[]>([]);
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [strokeWidth, setStrokeWidth] = useState<number>(() => {
+    const v = Number(localStorage.getItem(STROKE_WIDTH_KEY));
+    return STROKE_LEVELS.includes(v) ? v : 1;
+  });
+
+  const cycleStrokeWidth = useCallback(() => {
+    setStrokeWidth(prev => {
+      const next = STROKE_LEVELS[(STROKE_LEVELS.indexOf(prev) + 1) % STROKE_LEVELS.length] ?? 1;
+      localStorage.setItem(STROKE_WIDTH_KEY, String(next));
+      return next;
+    });
+  }, []);
 
   const { overlays, getPageOverlays, setPageOverlays, updatePageOverlays, clearAll } = useSessionStorage();
   const editorWrapperRef = useRef<HTMLDivElement>(null);
@@ -42,7 +79,7 @@ function App() {
   // Warn before leaving/closing the page if there are unsaved edits
   useEffect(() => {
     const hasEdits = pdfDoc && Object.values(overlays).some(
-      p => (p.images?.length || 0) + (p.texts?.length || 0) + (p.shapes?.length || 0) > 0
+      p => (p.images?.length || 0) + (p.texts?.length || 0) + (p.shapes?.length || 0) + (p.watermarks?.length || 0) > 0
     );
     if (!hasEdits) return;
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -104,9 +141,16 @@ function App() {
   const images = pageOverlays.images || [];
   const texts = pageOverlays.texts || [];
   const shapes = pageOverlays.shapes || [];
+  const watermarks = pageOverlays.watermarks || [];
 
   // ---- PDF Loading ----
-  const loadPdf = useCallback(async (arrayBuffer: ArrayBuffer, fileName: string) => {
+  const sessionIdRef = useRef<string>(getSessionId());
+
+  const loadPdf = useCallback(async (
+    arrayBuffer: ArrayBuffer,
+    fileName: string,
+    restore?: { overlays: OverlaysByPage; pageDimensions: PageDimensionsMap },
+  ) => {
     setLoading(true);
     try {
       const bytes = new Uint8Array(arrayBuffer);
@@ -117,6 +161,21 @@ function App() {
       setPdfDoc(doc);
       setTotalPages(doc.numPages);
       setCurrentPage(0);
+
+      // Every load (upload or restore) gets its own backup slot so tabs never
+      // overwrite each other, even after tab duplication or a shared restore
+      sessionIdRef.current = newSessionId();
+      savePdfBytes(sessionIdRef.current, bytes.slice()).catch(err =>
+        console.warn('Backup of PDF bytes failed:', err)
+      );
+
+      if (restore) {
+        for (const [pageIdx, pageData] of Object.entries(restore.overlays)) {
+          setPageOverlays(Number(pageIdx), pageData);
+        }
+        setPageDimensions(restore.pageDimensions);
+        return;
+      }
 
       // Check for embedded overlay data from a previous edit session
       const embedded = await extractOverlayData(doc);
@@ -144,6 +203,86 @@ function App() {
     reader.readAsArrayBuffer(file);
     e.target.value = '';
   }, [loadPdf, clearAll]);
+
+  // ---- Crash recovery ----
+  // Offer the most recent backup from any tab when starting with no PDF open
+  useEffect(() => {
+    if (pdfDoc) return;
+    let cancelled = false;
+    const refresh = () => {
+      listBackups()
+        .then(list => { if (!cancelled) setBackupList(list); })
+        .catch(() => {});
+    };
+    refresh();
+    // pick up backups written by other tabs while this one sits on the start screen
+    window.addEventListener('focus', refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', refresh);
+    };
+  }, [pdfDoc]);
+
+  const handleRestoreBackup = useCallback(async (sessionId: string) => {
+    setLoading(true);
+    try {
+      const backup = await getBackup(sessionId);
+      if (!backup) {
+        alert('That backup is no longer available.');
+        setBackupList(prev => prev.filter(b => b.sessionId !== sessionId));
+        return;
+      }
+      clearAll();
+      historyRef.current = [];
+      const buffer = backup.pdfBytes.slice().buffer as ArrayBuffer;
+      await loadPdf(buffer, backup.pdfName, {
+        overlays: backup.overlays,
+        pageDimensions: backup.pageDimensions,
+      });
+      // work now lives in this tab's fresh slot; drop the old one to avoid duplicates
+      deleteBackup(sessionId).catch(() => {});
+      setBackupList(prev => prev.filter(b => b.sessionId !== sessionId));
+    } catch (err) {
+      console.error('Restore failed:', err);
+      alert('Could not restore the backup.');
+    } finally {
+      setLoading(false);
+    }
+  }, [loadPdf, clearAll]);
+
+  const handleDeleteBackup = useCallback((sessionId: string) => {
+    deleteBackup(sessionId).catch(() => {});
+    setBackupList(prev => prev.filter(b => b.sessionId !== sessionId));
+  }, []);
+
+  // ---- Autosave every 30s (only when something changed) ----
+  const backupStateRef = useRef({ overlays, pageDimensions, pdfName, totalPages, hasPdf: false });
+  backupStateRef.current = { overlays, pageDimensions, pdfName, totalPages, hasPdf: !!pdfDoc };
+
+  useEffect(() => {
+    if (!pdfDoc) return;
+    let lastSerialized = '';
+    const save = () => {
+      const s = backupStateRef.current;
+      if (!s.hasPdf) return;
+      const serialized = JSON.stringify(s.overlays) + JSON.stringify(s.pageDimensions);
+      if (serialized === lastSerialized) return;
+      lastSerialized = serialized;
+      saveBackupMeta({
+        sessionId: sessionIdRef.current,
+        pdfName: s.pdfName,
+        totalPages: s.totalPages,
+        overlays: s.overlays,
+        pageDimensions: s.pageDimensions,
+        updatedAt: Date.now(),
+      })
+        .then(() => setLastSavedAt(Date.now()))
+        .catch(err => console.warn('Autosave failed:', err));
+    };
+    save();
+    const id = setInterval(save, AUTOSAVE_INTERVAL_MS);
+    return () => { clearInterval(id); save(); };
+  }, [pdfDoc]);
 
   // ---- Page Navigation ----
   const handlePrevPage = useCallback(() => {
@@ -178,9 +317,9 @@ function App() {
   }, []);
 
   // ---- Undo history (one entry per added overlay; undo removes that item) ----
-  const historyRef = useRef<Array<{ page: number; type: 'image' | 'text' | 'shape' }>>([]);
+  const historyRef = useRef<Array<{ page: number; type: 'image' | 'text' | 'shape' | 'watermark' }>>([]);
 
-  const pushHistory = useCallback((page: number, type: 'image' | 'text' | 'shape') => {
+  const pushHistory = useCallback((page: number, type: 'image' | 'text' | 'shape' | 'watermark') => {
     historyRef.current.push({ page, type });
     if (historyRef.current.length > 100) historyRef.current.shift();
   }, []);
@@ -194,6 +333,9 @@ function App() {
       }
       if (entry.type === 'text') {
         return { ...current, texts: (current.texts || []).slice(0, -1) };
+      }
+      if (entry.type === 'watermark') {
+        return { ...current, watermarks: (current.watermarks || []).slice(0, -1) };
       }
       return { ...current, shapes: (current.shapes || []).slice(0, -1) };
     });
@@ -222,6 +364,7 @@ function App() {
         ...prev,
         images: [...(prev.images || []), newImage],
       }));
+      setActiveTool(null);
     };
     img.onerror = (err) => {
       console.error('Failed to load image:', err);
@@ -242,29 +385,6 @@ function App() {
     };
     input.click();
   }, [addImageFromDataUrl]);
-
-  // Clipboard paste — place image at current mouse position
-  useEffect(() => {
-    if (!pdfDoc) return;
-    const handlePaste = (e: ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      for (const item of items) {
-        if (item.type.startsWith('image/')) {
-          e.preventDefault();
-          const pos = { ...mousePosRef.current };
-          const blob = item.getAsFile();
-          if (!blob) break;
-          const reader = new FileReader();
-          reader.onload = () => addImageFromDataUrl(reader.result as string, pos);
-          reader.readAsDataURL(blob);
-          break;
-        }
-      }
-    };
-    window.addEventListener('paste', handlePaste);
-    return () => window.removeEventListener('paste', handlePaste);
-  }, [pdfDoc, addImageFromDataUrl]);
 
   const updateImage = useCallback((index: number, updatedImage: ImageOverlayData) => {
     const current = getPageOverlays(currentPage);
@@ -320,8 +440,9 @@ function App() {
   }, [currentPage, getPageOverlays, setPageOverlays]);
 
   // ---- Shape handling ----
-  // Tool stays active after each shape so the user can keep drawing (toggle off to stop)
-  const toggleTool = useCallback((tool: ShapeKind) => {
+  // Tool stays active after each shape so the user can keep drawing (toggle off to stop);
+  // selecting any tool deactivates the others (text / line / box are mutually exclusive)
+  const toggleTool = useCallback((tool: ToolKind) => {
     setActiveTool(prev => (prev === tool ? null : tool));
     setSelectedOverlay(null);
   }, []);
@@ -349,12 +470,232 @@ function App() {
     setSelectedOverlay(null);
   }, [currentPage, getPageOverlays, setPageOverlays]);
 
+  // ---- Watermark handling ----
+  const addWatermark = useCallback((wm: WatermarkData) => {
+    pushHistory(currentPage, 'watermark');
+    let newIndex = 0;
+    updatePageOverlays(currentPage, (prev) => {
+      const list = [...(prev.watermarks || []), wm];
+      newIndex = list.length - 1;
+      return { ...prev, watermarks: list };
+    });
+    setSelectedOverlay({ type: 'watermark', index: newIndex });
+  }, [currentPage, updatePageOverlays, pushHistory]);
+
+  // Clipboard paste — watermarks (copied via Ctrl+C) take priority, then images
+  useEffect(() => {
+    if (!pdfDoc) return;
+    const handlePaste = (e: ClipboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      const text = e.clipboardData?.getData('text/plain');
+      if (text && text.includes('pdfEditorWatermark') && tag !== 'TEXTAREA' && tag !== 'INPUT') {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed?.pdfEditorWatermark) {
+            e.preventDefault();
+            const wm = parsed.pdfEditorWatermark as WatermarkData;
+            addWatermark({ ...wm, x: wm.x + 24, y: wm.y + 24 });
+            return;
+          }
+        } catch { /* not watermark data */ }
+      }
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          const pos = { ...mousePosRef.current };
+          const blob = item.getAsFile();
+          if (!blob) break;
+          const reader = new FileReader();
+          reader.onload = () => addImageFromDataUrl(reader.result as string, pos);
+          reader.readAsDataURL(blob);
+          break;
+        }
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [pdfDoc, addImageFromDataUrl, addWatermark]);
+
+  const handleAddTextWatermark = useCallback(() => {
+    const content = 'Your Text';
+    const font = 'Arial' as const;
+    const { width, height } = measureWatermarkText(content, font);
+    const dims = pageDimensions[currentPage];
+    const wm: TextWatermarkData = {
+      type: 'text',
+      content,
+      font,
+      color: '#333333',
+      x: dims ? Math.max(0, (dims.renderWidth - width) / 2) : 100,
+      y: dims ? Math.max(0, (dims.renderHeight - height) / 2) : 100,
+      width,
+      height,
+      scale: 1.5,
+      tile: 'single',
+      opacity: 0.5,
+      rotation: 0,
+      effect: 'none',
+    };
+    addWatermark(wm);
+  }, [currentPage, pageDimensions, addWatermark]);
+
+  const handleAddLogoWatermark = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg,image/webp';
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        const img = new Image();
+        img.onload = () => {
+          const maxW = 160;
+          const s = img.width > maxW ? maxW / img.width : 1;
+          const w = img.width * s;
+          const h = img.height * s;
+          const dims = pageDimensions[currentPage];
+          const wm: ImageWatermarkData = {
+            type: 'image',
+            src: dataUrl,
+            x: dims ? Math.max(0, (dims.renderWidth - w) / 2) : 100,
+            y: dims ? Math.max(0, (dims.renderHeight - h) / 2) : 100,
+            width: w,
+            height: h,
+            scale: 1,
+            tile: 'single',
+            opacity: 0.5,
+            rotation: 0,
+            effect: 'none',
+          };
+          addWatermark(wm);
+        };
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  }, [currentPage, pageDimensions, addWatermark]);
+
+  const updateWatermark = useCallback((index: number, wm: WatermarkData) => {
+    updatePageOverlays(currentPage, (prev) => {
+      const list = [...(prev.watermarks || [])];
+      list[index] = wm;
+      return { ...prev, watermarks: list };
+    });
+  }, [currentPage, updatePageOverlays]);
+
+  const deleteWatermark = useCallback((index: number) => {
+    updatePageOverlays(currentPage, (prev) => {
+      const list = [...(prev.watermarks || [])];
+      list.splice(index, 1);
+      return { ...prev, watermarks: list };
+    });
+    setSelectedOverlay(null);
+  }, [currentPage, updatePageOverlays]);
+
+  const duplicateWatermark = useCallback((index: number) => {
+    const current = getPageOverlays(currentPage);
+    const src = (current.watermarks || [])[index];
+    if (!src) return;
+    const copy: WatermarkData = { ...src, x: src.x + 24, y: src.y + 24 };
+    addWatermark(copy);
+  }, [currentPage, getPageOverlays, addWatermark]);
+
+  // Copy this page's watermarks to every page of the PDF
+  const applyWatermarksToAllPages = useCallback(() => {
+    const current = getPageOverlays(currentPage);
+    const template = current.watermarks || [];
+    if (template.length === 0) return;
+    for (let p = 0; p < totalPages; p++) {
+      if (p === currentPage) continue;
+      updatePageOverlays(p, (prev) => ({
+        ...prev,
+        watermarks: template.map(wm => ({ ...wm })),
+      }));
+    }
+  }, [currentPage, totalPages, getPageOverlays, updatePageOverlays]);
+
+  // ---- Watermark templates (persisted in localStorage across PDFs) ----
+  const handleSaveTemplate = useCallback((name: string): boolean => {
+    const wms = getPageOverlays(currentPage).watermarks || [];
+    if (wms.length === 0) {
+      alert('No watermarks on this page to save. Add a text or logo watermark first.');
+      return false;
+    }
+    try {
+      saveTemplate(name, wms);
+      return true;
+    } catch {
+      alert('Could not save template — browser storage is full. Try deleting old templates.');
+      return false;
+    }
+  }, [currentPage, getPageOverlays]);
+
+  const handleApplyTemplate = useCallback((wms: WatermarkData[], allPages: boolean) => {
+    const pages = allPages ? Array.from({ length: totalPages }, (_, p) => p) : [currentPage];
+    for (const p of pages) {
+      updatePageOverlays(p, (prev) => ({
+        ...prev,
+        watermarks: [...(prev.watermarks || []), ...wms.map(wm => ({ ...wm }))],
+      }));
+    }
+    setShowTemplates(false);
+  }, [currentPage, totalPages, updatePageOverlays]);
+
   // ---- Clear page ----
   const handleClearPage = useCallback(() => {
     if (confirm('Clear all overlays on this page?')) {
-      setPageOverlays(currentPage, { images: [], texts: [], shapes: [] });
+      setPageOverlays(currentPage, { images: [], texts: [], shapes: [], watermarks: [] });
     }
   }, [currentPage, setPageOverlays]);
+
+  // ---- Page numbers ----
+  // Pages never opened have no measured dimensions, so derive each page's render
+  // size from the current page's scale; that keeps placement and export aligned.
+  const handleApplyPageNumbers = useCallback(async (opts: PageNumberOptions) => {
+    if (!pdfDoc) return;
+    const baseDims = pageDimensions[currentPage];
+    if (!baseDims) return;
+    const baseViewport = (await pdfDoc.getPage(currentPage + 1)).getViewport({ scale: 1 });
+    const scale = baseDims.renderWidth / baseViewport.width;
+
+    const derivedDims: PageDimensionsMap = {};
+    for (let i = 0; i < totalPages; i++) {
+      const viewport = (await pdfDoc.getPage(i + 1)).getViewport({ scale: 1 });
+      const renderWidth = viewport.width * scale;
+      const renderHeight = viewport.height * scale;
+      derivedDims[i] = { renderWidth, renderHeight };
+
+      const overlay = buildPageNumberOverlay(
+        String(opts.startNumber + i),
+        opts.fontSize,
+        opts.position,
+        renderWidth,
+        renderHeight,
+        scale,
+      );
+      // kept first in the list so Ctrl+Z still targets the user's own last text
+      updatePageOverlays(i, (prev) => ({
+        ...prev,
+        texts: [overlay, ...(prev.texts || []).filter(t => t.role !== 'page-number')],
+      }));
+    }
+    setPageDimensions(prev => ({ ...derivedDims, ...prev }));
+    setShowMore(false);
+  }, [pdfDoc, currentPage, totalPages, pageDimensions, updatePageOverlays]);
+
+  const handleRemovePageNumbers = useCallback(() => {
+    for (let i = 0; i < totalPages; i++) {
+      updatePageOverlays(i, (prev) => ({
+        ...prev,
+        texts: (prev.texts || []).filter(t => t.role !== 'page-number'),
+      }));
+    }
+  }, [totalPages, updatePageOverlays]);
 
   // ---- Download ----
   const handleDownload = useCallback(async () => {
@@ -373,6 +714,15 @@ function App() {
     }
   }, [pdfBytes, pdfName, overlays, pageDimensions]);
 
+  // Copy the selected watermark to the OS clipboard as JSON
+  const handleCopyWatermark = useCallback((): boolean => {
+    if (selectedOverlay?.type !== 'watermark') return false;
+    const wm = getPageOverlays(currentPage).watermarks?.[selectedOverlay.index];
+    if (!wm) return false;
+    navigator.clipboard?.writeText(JSON.stringify({ pdfEditorWatermark: wm })).catch(() => {});
+    return true;
+  }, [selectedOverlay, currentPage, getPageOverlays]);
+
   // ---- Keyboard shortcuts ----
   useEffect(() => {
     if (!pdfDoc) return;
@@ -385,10 +735,15 @@ function App() {
         handleUndo();
         return;
       }
+      if (e.ctrlKey && key === 'c') {
+        if (handleCopyWatermark()) e.preventDefault();
+        return;
+      }
       if (e.shiftKey && !e.ctrlKey && !e.altKey) {
-        if (key === 't') { e.preventDefault(); handleAddText(); return; }
+        if (key === 't') { e.preventDefault(); toggleTool('text'); return; }
         if (key === 'l') { e.preventDefault(); toggleTool('line'); return; }
         if (key === 'b') { e.preventDefault(); toggleTool('rect'); return; }
+        if (key === 'a') { e.preventDefault(); toggleTool('arrow'); return; }
       }
       if (e.key === 'ArrowLeft') handlePrevPage();
       if (e.key === 'ArrowRight') handleNextPage();
@@ -396,7 +751,7 @@ function App() {
     };
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
-  }, [pdfDoc, handlePrevPage, handleNextPage, handleAddText, toggleTool, handleUndo]);
+  }, [pdfDoc, handlePrevPage, handleNextPage, toggleTool, handleUndo, handleCopyWatermark]);
 
   return (
     <div className="app">
@@ -409,7 +764,12 @@ function App() {
         onUpload={handleUpload}
         onDownload={handleDownload}
         onAddImage={handleAddImage}
-        onAddText={handleAddText}
+        onAddTextWatermark={handleAddTextWatermark}
+        onAddLogoWatermark={handleAddLogoWatermark}
+        templatesOpen={showTemplates}
+        onToggleTemplates={() => { setShowTemplates(s => !s); setShowMore(false); }}
+        moreOpen={showMore}
+        onToggleMore={() => { setShowMore(s => !s); setShowTemplates(false); }}
         onPrevPage={handlePrevPage}
         onNextPage={handleNextPage}
         onFontSizeChange={setFontSize}
@@ -417,6 +777,8 @@ function App() {
         onClearPage={handleClearPage}
         activeTool={activeTool}
         onToggleTool={toggleTool}
+        strokeWidth={strokeWidth}
+        onCycleStrokeWidth={cycleStrokeWidth}
         zoom={zoom}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
@@ -434,6 +796,34 @@ function App() {
           {!pdfDoc ? (
             <div className="editor-scroll-content">
               <div className="empty-state">
+                {backupList.length > 0 && (
+                  <div className="recovery-panel">
+                    <div className="recovery-title">
+                      <RotateCcw size={16} />
+                      Unsaved work found ({backupList.length})
+                    </div>
+                    {backupList.map(b => (
+                      <div className="recovery-item" key={b.sessionId}>
+                        <div className="recovery-text">
+                          <strong>{b.pdfName}</strong>
+                          <span>
+                            {b.totalPages} page{b.totalPages === 1 ? '' : 's'} — {new Date(b.updatedAt).toLocaleString()}
+                          </span>
+                        </div>
+                        <button className="recovery-restore" onClick={() => handleRestoreBackup(b.sessionId)}>
+                          Restore
+                        </button>
+                        <button
+                          className="recovery-dismiss"
+                          onClick={() => handleDeleteBackup(b.sessionId)}
+                          title="Discard backup"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div className="empty-icon">
                   <FileUp size={48} color="#e94560" />
                 </div>
@@ -457,7 +847,14 @@ function App() {
           ) : (
             <div className="editor-scroll-content">
               <div className="canvas-and-overlays" ref={canvasWrapperRef}
+                style={{ cursor: activeTool === 'text' ? 'text' : undefined }}
                 onClick={(e) => {
+                  // text tool places exactly one box, then deactivates
+                  if (activeTool === 'text') {
+                    handleAddText();
+                    setActiveTool(null);
+                    return;
+                  }
                   if (e.target === e.currentTarget || (e.target as HTMLElement).tagName === 'CANVAS') {
                     setSelectedOverlay(null);
                   }
@@ -478,7 +875,7 @@ function App() {
                       image={img}
                       index={i}
                       selected={selectedOverlay?.type === 'image' && selectedOverlay?.index === i}
-                      onSelect={() => setSelectedOverlay({ type: 'image', index: i })}
+                      onSelect={() => { setSelectedOverlay({ type: 'image', index: i }); setActiveTool(null); }}
                       onUpdate={updateImage}
                       onDelete={deleteImage}
                     />
@@ -503,19 +900,64 @@ function App() {
                       onDelete={deleteShape}
                     />
                   ))}
+                  {watermarks.map((wm, i) => (
+                    <WatermarkOverlay
+                      key={`wm-${currentPage}-${i}`}
+                      wm={wm}
+                      index={i}
+                      selected={selectedOverlay?.type === 'watermark' && selectedOverlay?.index === i}
+                      pageWidth={pageDimensions[currentPage]?.renderWidth || containerSize.width}
+                      pageHeight={pageDimensions[currentPage]?.renderHeight || containerSize.height}
+                      onSelect={() => setSelectedOverlay({ type: 'watermark', index: i })}
+                      onUpdate={updateWatermark}
+                      onDelete={deleteWatermark}
+                    />
+                  ))}
                 </div>
 
-                {activeTool && (
-                  <DrawingLayer tool={activeTool} onCommit={addShape} />
+                {activeTool && activeTool !== 'text' && (
+                  <DrawingLayer tool={activeTool} strokeWidth={strokeWidth} onCommit={addShape} />
                 )}
               </div>
             </div>
           )}
         </div>
 
+        {pdfDoc && showTemplates && (
+          <TemplatesMenu
+            onApply={handleApplyTemplate}
+            onSaveCurrent={handleSaveTemplate}
+            onClose={() => setShowTemplates(false)}
+          />
+        )}
+
+        {pdfDoc && showMore && (
+          <MoreMenu
+            onApplyPageNumbers={handleApplyPageNumbers}
+            onRemovePageNumbers={handleRemovePageNumbers}
+            onClose={() => setShowMore(false)}
+          />
+        )}
+
+        {pdfDoc && !showTemplates && !showMore && selectedOverlay?.type === 'watermark' && watermarks[selectedOverlay.index] && (
+          <WatermarkPanel
+            wm={watermarks[selectedOverlay.index]!}
+            onChange={(wm) => updateWatermark(selectedOverlay.index, wm)}
+            onDuplicate={() => duplicateWatermark(selectedOverlay.index)}
+            onDelete={() => deleteWatermark(selectedOverlay.index)}
+            onClose={() => setSelectedOverlay(null)}
+            onApplyAllPages={applyWatermarksToAllPages}
+          />
+        )}
+
         {pdfDoc && (
           <div className="page-indicator">
             Page {currentPage + 1} of {totalPages}
+            {lastSavedAt && (
+              <span className="autosave-note">
+                · backed up {new Date(lastSavedAt).toLocaleTimeString()}
+              </span>
+            )}
           </div>
         )}
       </div>

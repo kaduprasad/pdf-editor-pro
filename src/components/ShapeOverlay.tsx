@@ -27,25 +27,36 @@ interface ShapeOverlayProps {
 }
 
 export default function ShapeOverlay({ shape, index, selected, onSelect, onUpdate, onDelete }: ShapeOverlayProps) {
-  const isLine = shape.kind === 'line';
+  const isLinear = shape.kind === 'line' || shape.kind === 'arrow';
+  const vertical = shape.kind === 'arrow' && (shape.dir === 'up' || shape.dir === 'down');
+  const headRight = shape.dir !== 'left';
+  const headDown = shape.dir === 'down';
+  const thickness = shape.thickness ?? 2;
 
   return (
     <Rnd
       size={{
-        width: shape.width,
-        height: isLine ? LINE_HIT_AREA : shape.height,
+        width: vertical ? LINE_HIT_AREA : shape.width,
+        height: isLinear && !vertical ? LINE_HIT_AREA : shape.height,
       }}
-      position={{ x: shape.x, y: isLine ? shape.y - LINE_HIT_AREA / 2 : shape.y }}
+      position={{
+        x: vertical ? shape.x - LINE_HIT_AREA / 2 : shape.x,
+        y: isLinear && !vertical ? shape.y - LINE_HIT_AREA / 2 : shape.y,
+      }}
       onDragStop={(_e, d) => {
-        onUpdate(index, { ...shape, x: d.x, y: isLine ? d.y + LINE_HIT_AREA / 2 : d.y });
+        onUpdate(index, {
+          ...shape,
+          x: vertical ? d.x + LINE_HIT_AREA / 2 : d.x,
+          y: isLinear && !vertical ? d.y + LINE_HIT_AREA / 2 : d.y,
+        });
       }}
       onResizeStop={(_e, _direction, ref, _delta, position) => {
         onUpdate(index, {
           ...shape,
-          width: parseFloat(ref.style.width),
-          height: isLine ? 0 : parseFloat(ref.style.height),
-          x: position.x,
-          y: isLine ? position.y + LINE_HIT_AREA / 2 : position.y,
+          width: vertical ? 0 : parseFloat(ref.style.width),
+          height: isLinear && !vertical ? 0 : parseFloat(ref.style.height),
+          x: vertical ? position.x + LINE_HIT_AREA / 2 : position.x,
+          y: isLinear && !vertical ? position.y + LINE_HIT_AREA / 2 : position.y,
         });
       }}
       onMouseDown={(e) => {
@@ -53,12 +64,17 @@ export default function ShapeOverlay({ shape, index, selected, onSelect, onUpdat
         if (!selected) onSelect();
       }}
       bounds="parent"
-      minWidth={10}
-      minHeight={isLine ? LINE_HIT_AREA : 10}
-      enableResizing={!selected ? false : isLine
-        ? { left: true, right: true }
-        : { top: true, right: true, bottom: true, left: true, topRight: true, bottomRight: true, bottomLeft: true, topLeft: true }}
-      resizeHandleStyles={isLine ? {
+      minWidth={vertical ? LINE_HIT_AREA : 10}
+      minHeight={isLinear && !vertical ? LINE_HIT_AREA : 10}
+      enableResizing={!selected ? false : vertical
+        ? { top: true, bottom: true }
+        : isLinear
+          ? { left: true, right: true }
+          : { top: true, right: true, bottom: true, left: true, topRight: true, bottomRight: true, bottomLeft: true, topLeft: true }}
+      resizeHandleStyles={vertical ? {
+        top: { ...handleStyle('ns-resize'), top: -5, left: '50%', marginLeft: -5 },
+        bottom: { ...handleStyle('ns-resize'), bottom: -5, left: '50%', marginLeft: -5 },
+      } : isLinear ? {
         left: { ...handleStyle('ew-resize'), left: -5, top: '50%', marginTop: -5 },
         right: { ...handleStyle('ew-resize'), right: -5, top: '50%', marginTop: -5 },
       } : {
@@ -75,21 +91,57 @@ export default function ShapeOverlay({ shape, index, selected, onSelect, onUpdat
         outlineOffset: 2,
       }}
     >
-      {isLine ? (
+      {vertical ? (
+        <div style={{
+          position: 'absolute',
+          left: '50%',
+          top: 0,
+          width: thickness,
+          height: '100%',
+          marginLeft: -thickness / 2,
+          background: '#000',
+        }}>
+          <div style={{
+            position: 'absolute',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            [headDown ? 'bottom' : 'top']: -1,
+            width: 0,
+            height: 0,
+            borderLeft: '5px solid transparent',
+            borderRight: '5px solid transparent',
+            [headDown ? 'borderTop' : 'borderBottom']: '10px solid #000',
+          }} />
+        </div>
+      ) : isLinear ? (
         <div style={{
           position: 'absolute',
           top: '50%',
           left: 0,
           width: '100%',
-          height: 2,
-          marginTop: -1,
+          height: thickness,
+          marginTop: -thickness / 2,
           background: '#000',
-        }} />
+        }}>
+          {shape.kind === 'arrow' && (
+            <div style={{
+              position: 'absolute',
+              top: '50%',
+              transform: 'translateY(-50%)',
+              [headRight ? 'right' : 'left']: -1,
+              width: 0,
+              height: 0,
+              borderTop: '5px solid transparent',
+              borderBottom: '5px solid transparent',
+              [headRight ? 'borderLeft' : 'borderRight']: '10px solid #000',
+            }} />
+          )}
+        </div>
       ) : (
         <div style={{
           width: '100%',
           height: '100%',
-          border: '2px solid #000',
+          border: `${thickness}px solid #000`,
           boxSizing: 'border-box',
           background: 'transparent',
         }} />

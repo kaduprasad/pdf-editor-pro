@@ -1,10 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { OverlaysByPage, PageOverlays } from '../types';
+import type { OverlaysByPage, PageOverlays, WatermarkData } from '../types';
 
 const SESSION_KEY = 'pdf-editor-pro-overlays';
 
-function stripForStorage(overlays: OverlaysByPage): Record<string, { texts: PageOverlays['texts']; shapes: PageOverlays['shapes']; images: Array<Omit<PageOverlays['images'][number], 'src'>> }> {
-  const cleaned: Record<string, { texts: PageOverlays['texts']; shapes: PageOverlays['shapes']; images: Array<Omit<PageOverlays['images'][number], 'src'>> }> = {};
+interface StoredPageOverlays {
+  texts: PageOverlays['texts'];
+  shapes: PageOverlays['shapes'];
+  images: Array<Omit<PageOverlays['images'][number], 'src'>>;
+  watermarks: WatermarkData[];
+}
+
+function stripForStorage(overlays: OverlaysByPage): Record<string, StoredPageOverlays> {
+  const cleaned: Record<string, StoredPageOverlays> = {};
   for (const [page, data] of Object.entries(overlays)) {
     cleaned[page] = {
       texts: data.texts || [],
@@ -15,6 +22,10 @@ function stripForStorage(overlays: OverlaysByPage): Record<string, { texts: Page
         width: img.width,
         height: img.height,
       })),
+      // image watermark sources are too large for sessionStorage
+      watermarks: (data.watermarks || []).map(wm =>
+        wm.type === 'image' ? { ...wm, src: '' } : wm
+      ),
     };
   }
   return cleaned;
